@@ -1,0 +1,48 @@
+<?php
+
+/**
+ * @file
+ * Handles installing, uninstalling, and updating Agms Gateway settings.
+ * Ensures users have cURL enabled prior to installation.
+ */
+
+/**
+ * Implements hook_requirements().
+ */
+function commerce_agms_requirements($phase) {
+  // Skip the requirements check if SimpleTest is installed to avoid multiple cURL rows.
+  if (module_exists('simpletest')) {
+    return;
+  }
+
+  $t = get_t();
+
+  $has_curl = function_exists('curl_init');
+
+  $requirements['commerce_agms_curl'] = array(
+    'title' => $t('cURL'),
+    'value' => $has_curl ? $t('Enabled') : $t('Not found'),
+  );
+  if (!$has_curl) {
+    $requirements['commerce_agms_curl']['severity'] = REQUIREMENT_ERROR;
+    $requirements['commerce_agms_curl']['description'] = $t("Agms Gateway requires the PHP <a href='!curl_url'>cURL</a> library.", array('!curl_url' => 'http://php.net/manual/en/curl.setup.php'));
+  }
+
+  if(!@include(drupal_get_path('module', 'commerce_agms') . "/includes/commerce_agms_api.inc")) {
+    $requirements['commerce_agms_api']['severity'] = REQUIREMENT_ERROR;
+    $requirements['commerce_agms_api']['description'] = $t("Agms Gateway Api Class missing.");
+  }
+  return $requirements;
+}
+
+function commerce_agms_uninstall() {
+  // Delete related variables all at once.
+  db_query("DELETE FROM {variable} WHERE name LIKE 'commerce_agms_gateway_%%'");
+}
+
+/**
+ * Implements hook_update_last_removed().
+ */
+function commerce_agms_update_last_removed() {
+  return 3;
+}
