@@ -94,17 +94,16 @@ function commerce_agms_capture_form_submit($form, &$form_state) {
   );
 
   // Submit the request to Agms Payment Gateway.
-  // TODO
   $response = commerce_agms_request($form_state['payment_method'], $nvp);
 
   // Update and save the transaction based on the response.
   $transaction->payload[REQUEST_TIME] = $response;
 
   // If we didn't get an approval response code...
-  if ($response[0] != '1') {
+  if ($response['STATUS_CODE'] != '1') {
     // Display an error message but leave the transaction pending.
     drupal_set_message(t('Prior authorization capture failed, so the transaction will remain in a pending status.'), 'error');
-    drupal_set_message(check_plain($response[3]), 'error');
+    drupal_set_message(check_plain($response['STATUS_MSG']), 'error');
   }
   else {
     drupal_set_message(t('Prior authorization captured successfully.'));
@@ -114,7 +113,7 @@ function commerce_agms_capture_form_submit($form, &$form_state) {
 
     // Set the remote and local status accordingly.
     $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
-    $transaction->remote_status = $response[11];
+    $transaction->remote_status = $response['STATUS_MSG'];
 
     // Append a capture indication to the result message.
     $transaction->message .= '<br />' . t('Captured: @date', array('@date' => format_date(REQUEST_TIME, 'short')));
@@ -165,25 +164,24 @@ function commerce_agms_void_form_submit($form, &$form_state) {
   );
 
   // Submit the request to Agms Payment Gateway.
-  // TODO
   $response = commerce_agms_request($form_state['payment_method'], $nvp);
 
   // Update and save the transaction based on the response.
   $transaction->payload[REQUEST_TIME] = $response;
 
   // If we got an approval response code...
-  if ($response[0] == 1) {
+  if ($response['STATUS_CODE'] == 1) {
     drupal_set_message(t('Transaction successfully voided.'));
 
     // Set the remote and local status accordingly.
     $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
-    $transaction->remote_status = $response[11];
+    $transaction->remote_status = $response['STATUS_MSG'];
 
     // Update the transaction message to show that it has been voided.
     $transaction->message .= '<br />' . t('Voided: @date', array('@date' => format_date(REQUEST_TIME, 'short')));
   }
   else {
-    drupal_set_message(t('Void failed: @reason', array('@reason' => check_plain($response[3]))), 'error');
+    drupal_set_message(t('Void failed: @reason', array('@reason' => check_plain($response['STATUS_MSG']))), 'error');
   }
 
   commerce_payment_transaction_save($transaction);
@@ -281,23 +279,22 @@ function commerce_agms_credit_form_submit($form, &$form_state) {
     );
 
     // Submit the request to Agms Payment Gateway.
-    // TODO
     $response = commerce_agms_request($form_state['payment_method'], $nvp);
 
     // If the credit succeeded...
-    if ($response[0] == 1) {
+    if ($response['STATUS_CODE'] == 1) {
       $credit_amount = commerce_currency_decimal_to_amount($amount, $transaction->currency_code);
       drupal_set_message(t('Credit for @amount issued successfully', array('@amount' => commerce_currency_format($credit_amount, $transaction->currency_code))));
 
       // Create a new transaction to record the credit.
       $credit_transaction = commerce_payment_transaction_new('agms', $order->order_id);
       $credit_transaction->instance_id = $payment_method['instance_id'];
-      $credit_transaction->remote_id = $response[6];
+      $credit_transaction->remote_id = $response['TRANS_ID'];
       $credit_transaction->amount = $credit_amount * -1;
       $credit_transaction->currency_code = $transaction->currency_code;
       $credit_transaction->payload[REQUEST_TIME] = $response;
       $credit_transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
-      $credit_transaction->remote_status = $response[11];
+      $credit_transaction->remote_status = $response['STATUS_MSG'];
       $credit_transaction->message = t('Credited to @remote_id.', array('@remote_id' => $transaction->remote_id));
 
       // Save the credit transaction.
@@ -308,12 +305,7 @@ function commerce_agms_credit_form_submit($form, &$form_state) {
       $transaction->payload[REQUEST_TIME] = $response;
 
       // Display a failure message and response reason from Authorize.net.
-      drupal_set_message(t('Credit failed: @reason', array('@reason' => $response[3])), 'error');
-
-      // Add an additional helper message if the transaction hadn't settled yet.
-      if ($response[2] == 54) {
-        drupal_set_message(t('The transaction must be setted before a credit can be issued. This usually takes 24 hours'), 'error');
-      }
+      drupal_set_message(t('Credit failed: @reason', array('@reason' => $response['STATUS_MSG'])), 'error');
 
       commerce_payment_transaction_save($transaction);
     }

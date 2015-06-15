@@ -5,12 +5,9 @@
  * Implements Agms Payment Gateway for use in Drupal Commerce.
  *
  */
-
-/*
- * Agms Payment Gateway URLs
- */
-define('COMMERCE_AGMS_GATEWAY_TRANSACTION_URL', 'https://gateway.agms.com/roxapi/agms.asmx');
-define('COMMERCE_AGMS_GATEWAY_HOSTED_FORM_URL', 'https://gateway.agms.com/roxapi/AGMS_HostedPayment.asmx');
+// Agms Payment Gateway transaction mode definitions:
+define('AGMS_TXN_MODE_LIVE', 'live');
+define('AGMS_TXN_MODE_LIVE_TEST', 'live');
 
 /**
  * Implements hook_menu().
@@ -74,6 +71,7 @@ function commerce_agms_menu() {
  */
 function commerce_agms_capture_access($order, $transaction) {
   // Return FALSE if the transaction isn't for Agms Payment Gateway AIM or isn't
+  var_dump($transaction);
   // awaiting capture.
   if ($transaction->payment_method != 'agms' || empty($transaction->remote_id) ||
     strtoupper($transaction->remote_status) != 'AUTH_ONLY') {
@@ -131,7 +129,7 @@ function commerce_agms_void_access($order, $transaction) {
 function commerce_agms_credit_access($order, $transaction) {
   // Return FALSE if the transaction isn't for Agms Payment Gateway AIM, doesn't have a
   // success status or has an amount of 0 or less.
-  if ($transaction->payment_method != 'agms' || $transaction->status != 'success' || $transaction->amount <= 0) {
+  if ($transaction->payment_method != 'agms' || $transaction->status != 'Approved' || $transaction->amount <= 0) {
     return FALSE;
   }
 
@@ -173,6 +171,7 @@ function commerce_agms_default_settings() {
   return array(
     'commerce_agms_username' => '',
     'commerce_agms_password' => '',
+    'txn_mode' => AGMS_TXN_MODE_LIVE,
     'txn_type' => COMMERCE_CREDIT_AUTH_CAPTURE,
     'cardonfile' => FALSE,
     'card_types' => array(),
@@ -183,37 +182,46 @@ function commerce_agms_default_settings() {
 /**
  * Callback for payment gateway settings.
  */
-function commerce_agms_settings_form() {
+function commerce_agms_settings_form($settings = NULL) {
   module_load_include('inc', 'commerce_payment', 'includes/commerce_payment.credit_card');
 
   // Merge default settings into the stored settings array.
-  $settings = (array) $settings + commerce_authnet_aim_default_settings();
+  $settings = (array) $settings + commerce_agms_default_settings();
 
   $form = array();
 
   $form['commerce_agms_username'] = array(
     '#type' => 'textfield',
     '#title' => t('Agms Gateway Username'),
-    '#default_value' => variable_get('commerce_agms_username', ''),
+    '#default_value' => $settings['commerce_agms_username'],
   );
   $form['commerce_agms_password'] = array(
     '#type' => 'textfield',
     '#title' => t('Agms Gateway Password'),
-    '#default_value' => variable_get('commerce_agms_password', ''),
+    '#default_value' => $settings['commerce_agms_password'],
   );
-  $form['commerce_agms_gateway_transaction_url'] = array(
-    '#type' => 'textfield',
-    '#title' => t('Agms Gateway Transaction URL'),
-    '#default_value' => variable_get('commerce_agms_gateway_transaction_url',
-                                     COMMERCE_AGMS_GATEWAY_TRANSACTION_URL),
+  
+  $form['txn_mode'] = array(
+    '#type' => 'radios',
+    '#title' => t('Transaction mode'),
+    '#description' => t('Agms Gateway Supports Developer Mode though Test Card.'),
+    '#options' => array(
+      AGMS_TXN_MODE_LIVE => t('Live transactions in a live account'),
+      
+    ),
+    '#default_value' => $settings['txn_mode'],
   );
-  $form['commerce_agms_gateway_hosted_form_url'] = array(
-    '#type' => 'textfield',
-    '#title' => t('Agms Gateway Hosted Form URL'),
-    '#default_value' => variable_get('commerce_agms_gateway_hosted_form_url',
-                                     COMMERCE_AGMS_GATEWAY_HOSTED_FORM_URL),
+  $form['txn_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Default credit card transaction type'),
+    '#description' => t('The default will be used to process transactions during checkout.'),
+    '#options' => array(
+      COMMERCE_CREDIT_AUTH_CAPTURE => t('Authorization and capture'),
+      COMMERCE_CREDIT_AUTH_ONLY => t('Authorization only (requires manual or automated capture after checkout)'),
+    ),
+    '#default_value' => $settings['txn_type'],
   );
-
+  
   $form['card_types'] = array(
     '#type' => 'checkboxes',
     '#title' => t('Limit accepted credit cards to the following types'),
@@ -238,7 +246,6 @@ function commerce_agms_settings_form() {
       '#markup' => t('To enable Card on File funcitionality download and install the Card on File module.'),
     );
   }
-
   
   $form['log'] = array(
     '#type' => 'checkboxes',
@@ -358,7 +365,7 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
     'PaymentType' => 'creditcard',
     'Amount' => number_format(commerce_currency_amount_to_decimal($charge['amount'], $charge['currency_code']), 2, '.', ''),
     'CCNumber' => $pane_values['credit_card']['number'],
-    'CCExpDate' => $pane_values['credit_card']['exp_month'] . $pane_values['credit_card']['exp_year'],
+    'CCExpDate' => $pane_values['credit_card']['exp_month'] . substr($pane_values['credit_card']['exp_year'],-2),
   );
 
   if (isset($pane_values['credit_card']['code'])) {
@@ -416,18 +423,18 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
 
   // Submit the request to Agms Payment Gateway.
   // TODO
-  $response = commerce_authnet_aim_request($payment_method, $nvp);
+  $response = commerce_agms_request($payment_method, $nvp);
 
   // Prepare a transaction object to log the API response.
   $transaction = commerce_payment_transaction_new('agms', $order->order_id);
   $transaction->instance_id = $payment_method['instance_id'];
-  $transaction->remote_id = $response[6];
+  $transaction->remote_id = $response['TRANS_ID'];
   $transaction->amount = $charge['amount'];
   $transaction->currency_code = $charge['currency_code'];
   $transaction->payload[REQUEST_TIME] = $response;
 
   // If we didn't get an approval response code...
-  if ($response[0] != '1') {
+  if ($response['STATUS_CODE'] != '1') {
     // Create a failed transaction with the error message.
     $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
   }
@@ -449,18 +456,17 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
   }
 
   // Store the type of transaction in the remote status.
-  $transaction->remote_status = $response[11];
-
+  $transaction->remote_status = $response['STATUS_MSG'];
   // Build a meaningful response message.
   $message = array(
-    '<b>' . commerce_agms_reverse_txn_type($response[11]) . '</b>',
-    '<b>' . ($response[0] != '1' ? t('REJECTED') : t('ACCEPTED')) . ':</b> ' . check_plain($response[3]),
-    t('AVS response: @avs', array('@avs' => commerce_agms_avs_response($response[5]))),
+    '<b>' . commerce_agms_reverse_txn_type($txn_type) . '</b>',
+    '<b>' . ($response['STATUS_CODE'] != '1' ? t('REJECTED') : t('ACCEPTED')) . ':</b> ' . check_plain($response['STATUS_MSG']),
+    t('AVS response: @avs', array('@avs' => check_plain(print_r($response['AVS_CODE'], TRUE)))),
   );
 
   // Add the CVV response if enabled.
   if (isset($nvp['CVV'])) {
-    $message[] = t('CVV match: @cvv', array('@cvv' => commerce_agms_cvv_response($response[38])));
+    $message[] = t('CVV match: @cvv', array('@cvv' => check_plain(print_r($response['CVV2_CODE'], TRUE))));
   }
 
   $transaction->message = implode('<br />', $message);
@@ -469,9 +475,9 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
   commerce_payment_transaction_save($transaction);
 
   // If the payment failed, display an error and rebuild the form.
-  if ($response[0] != '1') {
+  if ($response['STATUS_CODE'] != '1') {
     drupal_set_message(t('We received the following error processing your card. Please enter your information again or try a different card.'), 'error');
-    drupal_set_message(check_plain($response[3]), 'error');
+    drupal_set_message(check_plain($response['STATUS_MSG']), 'error');
     return FALSE;
   }
 
@@ -499,10 +505,10 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
         // If the Card Profile creation was a success, store the new card on
         // file data locally.
         // TODO
-        if ((string) $response->messages->resultCode == 'Ok') {
+        if ($response['STATUS_CODE'] == 1) {
           // Build a remote ID that includes the Card Profile ID and the
           // Payment Profile ID.
-          $remote_id = (string) $response->customerProfileId . '|' . (string) $response->customerPaymentProfileIdList->numericString;
+          $remote_id = $response['SAFE_ID'];
 
           $card_data = commerce_cardonfile_new();
           $card_data->uid = $order->uid;
@@ -518,21 +524,21 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
 
           // Save and log the creation of the new card on file.
           commerce_cardonfile_save($card_data);
-          watchdog('commerce_authnet', 'CIM Customer Profile @profile_id created and saved to user @uid.', array('@profile_id' => (string) $response->customerProfileId, '@uid' => $order->uid));
+          watchdog('commerce_agms', 'SAFE Card Profile @profile_id created and saved to user @uid.', array('@profile_id' => (string) $response->customerProfileId, '@uid' => $order->uid));
         }
-        // TODO
-        elseif ((string) $response->messages->message->code == 'E00039') {
-          // But if a Customer Profile already existed for this user, attempt
-          // instead to add this card as a new Payment Profile to it.
-          $result = array_filter(explode(' ', (string) $response->messages->message->text), 'is_numeric');
-          $add_to_profile = reset($result);
-        }
+        // Agms Gateway do not support check for Customer Id
+        // elseif ($response['STATUS_CODE'] != 'E00039') {
+        //   // But if a Customer Profile already existed for this user, attempt
+        //   // instead to add this card as a new Payment Profile to it.
+        //   $result = array_filter(explode(' ', (string) $response->messages->message->text), 'is_numeric');
+        //   $add_to_profile = reset($result);
+        // }
       }
     }
     else {
       // Extract the user's Card Profile ID from the first card's remote ID.
       $card_data = reset($stored_cards);
-      list($agms_safe_card_profile_id, $agms_safe_payment_profile_id) = explode('|', $card_data->remote_id);
+      $agms_safe_card_profile_id = $card_data->remote_id;
 
       // Attempt to add the card as a new payment profile to this Customer Profile.
       $add_to_profile = $agms_safe_card_profile_id;
@@ -545,10 +551,10 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
       // If the Payment Profile creation was a success, store the new card on
       // file data locally.
       // TODO
-      if ((string) $response->messages->resultCode == 'Ok') {
+      if ((string) $response['STATUS_CODE'] == 1) {
         // Build a remote ID that includes the Customer Profile ID and the new
         // Payment Profile ID.
-        $remote_id = $add_to_profile . '|' . (string) $response->customerPaymentProfileId;
+        $remote_id = $response['SAFE_ID'];
 
         $card_data = commerce_cardonfile_new();
         $card_data->uid = $order->uid;
@@ -564,9 +570,9 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
 
         // Save and log the creation of the new card on file.
         commerce_cardonfile_save($card_data);
-        watchdog('commerce_authnet', 'CIM Payment Profile added to Customer Profile @profile_id for user @uid.', array('@profile_id' => $add_to_profile, '@uid' => $order->uid));
+        watchdog('commerce_agms', 'SAFE Card Profile added to Customer Profile @profile_id for user @uid.', array('@profile_id' => $add_to_profile, '@uid' => $order->uid));
       }
-      elseif (!empty($card_data) && (string) $response->messages->message->code == 'E00040') {
+      elseif (!empty($card_data) && (string) $response['STATUS_CODE'] == 'E00040') {
         // But if we could not find a customer profile, assume the existing
         // customer profile ID we had is no longer valid and deactivate the card
         // data that resulted in the error.
@@ -577,10 +583,10 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
         if ($response = commerce_agms_safe_create_card_profile_request($payment_method, $order, $payment_details)) {
           // If the Card Profile creation was a success, store the new card on
           // file data locally.
-          if ((string) $response->messages->resultCode == 'Ok') {
+          if ((string) $response['STATUS_CODE'] == 1) {
             // Build a remote ID that includes the Customer Profile ID and the
             // Payment Profile ID.
-            $remote_id = (string) $response->customerProfileId . '|' . (string) $response->customerPaymentProfileIdList->numericString;
+            $remote_id = $response['SAFE_ID'];
 
             $card_data = commerce_cardonfile_new();
             $card_data->uid = $order->uid;
@@ -596,7 +602,7 @@ function commerce_agms_submit_form_submit($payment_method, $pane_form, $pane_val
 
             // Save and log the creation of the new card on file.
             commerce_cardonfile_save($card_data);
-            watchdog('commerce_authnet', 'CIM Customer Profile @profile_id created and saved to user @uid.', array('@profile_id' => (string) $response->customerProfileId, '@uid' => $order->uid));
+            watchdog('commerce_agms', 'SAFE Card Profile @profile_id created and saved to user @uid.', array('@profile_id' => (string) $response->customerProfileId, '@uid' => $order->uid));
           }
         }
       }
@@ -656,7 +662,7 @@ function commerce_agms_form_commerce_cardonfile_update_form_alter(&$form, &$form
 
 
   // Extract the Card Profile and Payment Profile IDs from the remote_id.
-  list($agms_safe_card_profile_id, $agms_safe_payment_profile_id) = explode('|', $card_data->remote_id);
+  $agms_safe_card_profile_id = $card_data->remote_id;
 
   // Load the full payment profile from Agms Payment Safe Gateway.
   $payment_profile_xml = commerce_agms_safe_get_customer_payment_profile_request($payment_method, $agms_safe_card_profile_id, $agms_safe_payment_profile_id);
@@ -731,7 +737,7 @@ function commerce_agms_safe_cardonfile_charge($payment_method, $card_data, $orde
   );
 
   // If we get a response from the API server...
-  $xml_response = commerce_authnet_cim_request($payment_method, 'createCustomerProfileTransactionRequest', $api_request_data);
+  $xml_response = commerce_agms_safe_request($payment_method, 'createCustomerProfileTransactionRequest', $api_request_data);
 
   if (!empty($xml_response->directResponse)) {
     // Extract the response data from the XML.
@@ -742,7 +748,7 @@ function commerce_agms_safe_cardonfile_charge($payment_method, $card_data, $orde
     }
 
     // Prepare a transaction object to represent the transaction attempt.
-    $transaction = commerce_payment_transaction_new('authnet_aim', $order->order_id);
+    $transaction = commerce_payment_transaction_new('agms', $order->order_id);
     $transaction->instance_id = $payment_method['instance_id'];
     $transaction->remote_id = $response[6];
     $transaction->amount = $charge['amount'];
@@ -772,9 +778,9 @@ function commerce_agms_safe_cardonfile_charge($payment_method, $card_data, $orde
 
     // Build a meaningful response message.
     $message = array(
-      '<b>' . commerce_authnet_reverse_txn_type(commerce_authnet_txn_type($payment_method['settings']['txn_type'])) . '</b>',
+      '<b>' . commerce_agms_reverse_txn_type(commerce_agms_txn_type($payment_method['settings']['txn_type'])) . '</b>',
       '<b>' . ($response[0] != '1' ? t('REJECTED') : t('ACCEPTED')) . ':</b> ' . check_plain($response[3]),
-      t('AVS response: @avs', array('@avs' => commerce_authnet_avs_response($response[5]))),
+      t('AVS response: @avs', array('@avs' => commerce_agms_avs_response($response[5]))),
     );
 
     $transaction->message = implode('<br />', $message);
@@ -857,7 +863,7 @@ function commerce_agms_safe_cardonfile_update($form, &$form_state, $payment_meth
 
   // Fetch the response from the API server and let Card on File know if the
   // update was successful.
-  $xml_response = commerce_authnet_cim_request($payment_method, 'updateCustomerPaymentProfileRequest', $api_request_data);
+  $xml_response = commerce_agms_safe_request($payment_method, 'updateCustomerPaymentProfileRequest', $api_request_data);
 
   return (string) $xml_response->messages->message->code == 'I00001';
 }
@@ -1089,13 +1095,11 @@ function commerce_agms_safe_delete_card_payment_profile_request($payment_method,
 function commerce_agms_request($payment_method, $nvp = array()) {
   
   $url = commerce_agms_server_url($payment_method['settings']['txn_mode']);
-
   // Add the default name-value pairs to the array.
   $nvp += array(
     // API credentials
     'GatewayUserName' => $payment_method['settings']['commerce_agms_username'],
-    'GatewayPassword' => $payment_method['settings']['commerce_agms_password'],
-    'Email' => $payment_method['settings']['email_customer'],
+    'GatewayPassword' => $payment_method['settings']['commerce_agms_password']    
   );
 
   // Allow modules to alter parameters of the API request.
@@ -1106,7 +1110,7 @@ function commerce_agms_request($payment_method, $nvp = array()) {
     // Mask the credit card number and CVV.
     $log_nvp = $nvp;
     $log_nvp['GatewayUserName'] = str_repeat('X', strlen($log_nvp['GatewayUserName']));
-    $log_nvp['GatewayPassword'] = str_repeat('X', strlen($log_nvp['settings']['GatewayPassword']));
+    $log_nvp['GatewayPassword'] = str_repeat('X', strlen($log_nvp['GatewayPassword']));
 
     if (!empty($log_nvp['CCNumber'])) {
       $log_nvp['CCNumber'] = str_repeat('X', strlen($log_nvp['CCNumber']) - 4) . substr($log_nvp['CCNumber'], -4);
@@ -1127,14 +1131,13 @@ function commerce_agms_request($payment_method, $nvp = array()) {
   curl_setopt($ch, CURLOPT_URL, $url);
   curl_setopt($ch, CURLOPT_VERBOSE, 0);
   curl_setopt($ch, CURLOPT_POST, 1);
-  curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
+  curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
   curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
   curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
   curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
   curl_setopt($ch, CURLOPT_NOPROGRESS, 1);
   curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
   $result = curl_exec($ch);
-
   // Log any errors to the watchdog.
   if ($error = curl_error($ch)) {
     watchdog('commerce_agms', 'cURL error: @error', array('@error' => $error), WATCHDOG_ERROR);
@@ -1144,10 +1147,6 @@ function commerce_agms_request($payment_method, $nvp = array()) {
 
   // Make the response an array.
   $response = Agms::parseResponse($result, $op='ProcessTransaction');
-
-  for ($i = 0; $i < count($response); $i++) {
-    $response[$i] = substr($response[$i], 1, strlen($response[$i]) - 2);
-  }
 
   // Log the response if specified.
   if ($payment_method['settings']['log']['response'] == 'response') {
@@ -1168,8 +1167,8 @@ function commerce_agms_request($payment_method, $nvp = array()) {
  */
 function commerce_agms_server_url($txn_mode) {
   switch ($txn_mode) {
-    case AUTHNET_TXN_MODE_LIVE:
-    case AUTHNET_TXN_MODE_LIVE_TEST:
+    case AGMS_TXN_MODE_LIVE:
+    case AGMS_TXN_MODE_LIVE_TEST:
       return 'https://gateway.agms.com/roxapi/agms.asmx';
   }
 }
@@ -1187,7 +1186,6 @@ function commerce_agms_server_url($txn_mode) {
 function commerce_agms_safe_request($payment_method, $request_type, $api_request_data) {
   // Get the API endpoint URL for the method's transaction mode.
   $url = commerce_agms_safe_server_url($payment_method['settings']['txn_mode']);
-
   // Add default data to the API request data array.
   if (!isset($api_request_data['merchantAuthentication'])) {
     $api_request_data = array(
@@ -1232,7 +1230,7 @@ function commerce_agms_safe_request($payment_method, $request_type, $api_request
   commerce_simplexml_add_children($api_request_element, $api_request_data);
 
   // Allow modules an opportunity to alter the request before it is sent.
-  drupal_alter('commerce_authnet_cim_request', $api_request_element);
+  drupal_alter('commerce_agms_safe_request', $api_request_element);
 
   // Generate an XML string.
   $xml = $api_request_element->asXML();
@@ -1262,7 +1260,7 @@ function commerce_agms_safe_request($payment_method, $request_type, $api_request
       $log_element->paymentProfile->payment->creditCard->cardCode = str_repeat('X', strlen((string) $log_element->paymentProfile->payment->creditCard->cardCode));
     }
 
-    watchdog('commerce_authnet', 'Agms Payment Gateway SAFE @type to @url: @xml', array('@type' => $request_type, '@url' => $url, '@xml' => $log_element->asXML()), WATCHDOG_DEBUG);
+    watchdog('commerce_agms', 'Agms Payment Gateway SAFE @type to @url: @xml', array('@type' => $request_type, '@url' => $url, '@xml' => $log_element->asXML()), WATCHDOG_DEBUG);
   }
 
   // Build the array of header information for the request.
@@ -1285,7 +1283,7 @@ function commerce_agms_safe_request($payment_method, $request_type, $api_request
 
   // Log any errors to the watchdog.
   if ($error = curl_error($ch)) {
-    watchdog('commerce_authnet', 'cURL error: @error', array('@error' => $error), WATCHDOG_ERROR);
+    watchdog('commerce_agms', 'cURL error: @error', array('@error' => $error), WATCHDOG_ERROR);
     return FALSE;
   }
   curl_close($ch);
@@ -1300,7 +1298,7 @@ function commerce_agms_safe_request($payment_method, $request_type, $api_request
 
     // Log the API response if specified.
     if ($payment_method['settings']['log']['response'] == 'response') {
-      watchdog('commerce_authnet', 'API response received:<pre>@xml</pre>', array('@xml' => $response->asXML()));
+      watchdog('commerce_agms', 'API response received:<pre>@xml</pre>', array('@xml' => $response->asXML()));
     }
 
     return $response;
@@ -1337,22 +1335,22 @@ function commerce_agms_safe_server_url($txn_mode) {
 function commerce_agms_txn_type($txn_type) {
   switch ($txn_type) {
     case COMMERCE_CREDIT_AUTH_ONLY:
-      return 'AUTH_ONLY';
+      return 'auth';
     case COMMERCE_CREDIT_PRIOR_AUTH_CAPTURE:
-      return 'PRIOR_AUTH_CAPTURE';
+      return 'capture';
     case COMMERCE_CREDIT_AUTH_CAPTURE:
-      return 'AUTH_CAPTURE';
+      return 'sale';
     case COMMERCE_CREDIT_CAPTURE_ONLY:
-      return 'CAPTURE_ONLY';
+      return 'capture';
     case COMMERCE_CREDIT_REFERENCE_SET:
     case COMMERCE_CREDIT_REFERENCE_TXN:
     case COMMERCE_CREDIT_REFERENCE_REMOVE:
     case COMMERCE_CREDIT_REFERENCE_CREDIT:
       return NULL;
     case COMMERCE_CREDIT_CREDIT:
-      return 'CREDIT';
+      return 'refund';
     case COMMERCE_CREDIT_VOID:
-      return 'VOID';
+      return 'void';
   }
 }
 

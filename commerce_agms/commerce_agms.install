@@ -37,7 +37,7 @@ function commerce_agms_requirements($phase) {
 
 function commerce_agms_uninstall() {
   // Delete related variables all at once.
-  db_query("DELETE FROM {variable} WHERE name LIKE 'commerce_agms_gateway_%%'");
+  db_query("DELETE FROM {variable} WHERE name LIKE 'commerce_agms_%%'");
 }
 
 /**
